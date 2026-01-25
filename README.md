@@ -1,15 +1,13 @@
-# Codex
+Ôªø# Codex
 
 Codex is a **local-first agent runner + web UI** for codebases. It lets you run task-driven agents against a workspace repo, stream logs, and produce patch-based edits you can review and apply.
 
 Codex is great for:
 - Task-driven repo changes (generate a patch, review, then apply)
-- ìExplain repoî summaries with cached, token-optimized scanning
+- Explain repo summaries with cached, token-optimized scanning
 - Architecture diagrams (Mermaid) rendered in the UI
 
-Unlike Cursor/Copilot (autocomplete inside an editor), Codex is **task-oriented**: you give a goal, it executes tools in a sandbox, and returns a patch + audit trail.
-
----
+Unlike Cursor/Copilot (autocomplete inside an editor), Codex is **task-oriented**: you give a goal, it executes tools in a sandbox, and returns a patch plus an audit trail.
 
 ## Key Features
 
@@ -25,8 +23,6 @@ Unlike Cursor/Copilot (autocomplete inside an editor), Codex is **task-oriented*
   - Rate limiting + retries + circuit breaker
   - Digest caching and prompt truncation
 
----
-
 ## Architecture
 
 **Components**
@@ -35,7 +31,7 @@ Unlike Cursor/Copilot (autocomplete inside an editor), Codex is **task-oriented*
 - **Agent Engine**: OpenHands SDK (`openhands-sdk/`, `openhands-tools/`)
 - **Providers**: Gemini + Azure MI (`app/backend/providers.py`)
 - **Sandbox**: file tool wrapper (`app/backend/sandbox_tools.py`)
-- **Artifacts**: `.openhands_runs/<task_id>/run.jsonl`, `summary.json`, `changes.patch`
+- **Artifacts**: `.openhands_runs/task_id/run.jsonl`, `summary.json`, `changes.patch`
 
 ### System Diagram
 
@@ -46,8 +42,8 @@ flowchart LR
   SDK -->|Tools| Sandbox[Workspace Sandbox]
   SDK -->|LLM Calls| Provider[Provider Layer]
   Provider --> Gemini[Gemini]
-  Provider --> AzureMI[Azure OpenAI (Managed Identity)]
-  API --> Artifacts[.openhands_runs/<task_id>/*]
+  Provider --> AzureMI["Azure OpenAI - Managed Identity"]
+  API --> Artifacts[.openhands_runs/task_id/*]
 ```
 
 ### Run Task Sequence
@@ -89,8 +85,6 @@ sequenceDiagram
   API-->>UI: summary_markdown + key_files
 ```
 
----
-
 ## Repository Layout
 
 ```
@@ -111,8 +105,6 @@ Key implementation files:
 - Throttling/budgeting: `app/backend/llm_call_manager.py`, `app/backend/budgets.py`
 - Repo digest: `app/backend/repo_digest.py`
 - Sandbox: `app/backend/sandbox_tools.py`
-
----
 
 ## Quickstart (Local - Gemini)
 
@@ -174,8 +166,6 @@ Open: `http://localhost:5173`
 - **Explain Repo**: UI > Repo Tools > Explain Repo
 - **Diagram**: UI > Repo Tools > Generate Diagram
 
----
-
 ## Provider Configuration
 
 ### A) Gemini (local dev)
@@ -213,8 +203,6 @@ LLM_MAX_CONCURRENCY_AZURE=2
 LLM_MIN_INTERVAL_MS_AZURE=250
 ```
 
----
-
 ## CLI Runner (Optional)
 
 ```bash
@@ -234,13 +222,11 @@ python my_agent_runner.py \
 
 Artifacts are written to:
 ```
-.openhands_runs/<task_id>/
+.openhands_runs/task_id/
   run.jsonl
   summary.json
   changes.patch
 ```
-
----
 
 ## Validation Commands (Allowlist)
 
@@ -250,8 +236,6 @@ pytest; python -m pytest; npm test; npm run build; ruff; mypy; cmake --build; ct
 ```
 
 If a command is not in the allowlist, the run fails with a clear error and logs it to `run.jsonl`.
-
----
 
 ## Troubleshooting
 
@@ -270,11 +254,9 @@ If a command is not in the allowlist, the run fails with a clear error and logs 
 - Confirm deployment names and API version.
 
 Where to look:
-- `.openhands_runs/<task_id>/run.jsonl`
-- `.openhands_runs/<task_id>/summary.json`
+- `.openhands_runs/task_id/run.jsonl`
+- `.openhands_runs/task_id/summary.json`
 - Backend console logs
-
----
 
 ## Security Notes
 
@@ -282,9 +264,7 @@ Where to look:
 - Workspace sandbox blocks access outside the repo
 - `.env` files are blocked from reads
 - All tool actions and outputs are logged to `run.jsonl`
-- ìApply patchî is gated and can be disabled via repo scope
-
----
+- ‚ÄúApply patch‚Äù is gated and can be disabled via repo scope
 
 ## License / Disclaimer
 
