@@ -191,6 +191,7 @@ repomix-output.txt
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+node_modules/
 
 logs
 
@@ -203,6 +204,7 @@ cache
 /workspace/
 openapi.json
 .client/
+.openhands_runs/
 
 # Local workspace files
 .beads/*.db

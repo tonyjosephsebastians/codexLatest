@@ -1,124 +1,295 @@
-<a name="readme-top"></a>
+# Codex
 
-<div align="center">
-  <img src="https://raw.githubusercontent.com/OpenHands/docs/main/openhands/static/img/logo.png" alt="Logo" width="200">
-  <h1 align="center">OpenHands Software Agent SDK </h1>
-</div>
+Codex is a **local-first agent runner + web UI** for codebases. It lets you run task-driven agents against a workspace repo, stream logs, and produce patch-based edits you can review and apply.
 
+Codex is great for:
+- Task-driven repo changes (generate a patch, review, then apply)
+- �Explain repo� summaries with cached, token-optimized scanning
+- Architecture diagrams (Mermaid) rendered in the UI
 
-<div align="center">
-  <a href="https://github.com/OpenHands/software-agent-sdk/blob/main/LICENSE"><img src="https://img.shields.io/github/license/OpenHands/software-agent-sdk?style=for-the-badge&color=blue" alt="MIT License"></a>
-  <a href="https://openhands.dev/joinslack"><img src="https://img.shields.io/badge/Slack-Join%20Us-red?logo=slack&logoColor=white&style=for-the-badge" alt="Join our Slack community"></a>
-  <br>
-  <a href="https://docs.openhands.dev/sdk"><img src="https://img.shields.io/badge/Documentation-000?logo=googledocs&logoColor=FFE165&style=for-the-badge" alt="Check out the documentation"></a>
-  <a href="https://arxiv.org/abs/2511.03690"><img src="https://img.shields.io/badge/Paper-000?logoColor=FFE165&logo=arxiv&style=for-the-badge" alt="Tech Report"></a>
-  <a href="https://docs.google.com/spreadsheets/d/1wOUdFCMyY6Nt0AIqF705KN4JKOWgeI4wUGUP60krXXs/edit?gid=811504672#gid=811504672"><img src="https://img.shields.io/badge/SWEBench-77.6-000?logoColor=FFE165&style=for-the-badge" alt="Benchmark Score"></a>
-  <br>
-  <!-- Keep these links. Translations will automatically update with the README. -->
-  <a href="https://www.readme-i18n.com/OpenHands/software-agent-sdk?lang=de">Deutsch</a> |
-  <a href="https://www.readme-i18n.com/OpenHands/software-agent-sdk?lang=es">Español</a> |
-  <a href="https://www.readme-i18n.com/OpenHands/software-agent-sdk?lang=fr">français</a> |
-  <a href="https://www.readme-i18n.com/OpenHands/software-agent-sdk?lang=ja">日本語</a> |
-  <a href="https://www.readme-i18n.com/OpenHands/software-agent-sdk?lang=ko">한국어</a> |
-  <a href="https://www.readme-i18n.com/OpenHands/software-agent-sdk?lang=pt">Português</a> |
-  <a href="https://www.readme-i18n.com/OpenHands/software-agent-sdk?lang=ru">Русский</a> |
-  <a href="https://www.readme-i18n.com/OpenHands/software-agent-sdk?lang=zh">中文</a>
+Unlike Cursor/Copilot (autocomplete inside an editor), Codex is **task-oriented**: you give a goal, it executes tools in a sandbox, and returns a patch + audit trail.
 
-  <hr>
-</div>
+---
 
-The OpenHands Software Agent SDK is a set of Python and REST APIs for **building agents that work with code**.
+## Key Features
 
-You can use the OpenHands Software Agent SDK for:
-* One-off tasks, like building a README for your repo
-* Routine maintenance tasks, like updating dependencies
-* Major tasks that involve multiple agents, like refactors and rewrites
+- **Run Task**: stream logs, generate a patch, optionally apply it
+- **Explain Repo**: cached + token optimized repo digest for quick summaries
+- **Architecture Diagram**: Mermaid output rendered in the UI
+- **Providers**:
+  - **Gemini** (local dev)
+  - **Azure OpenAI** via **Managed Identity** (enterprise, no API keys)
+- **Safety Controls**:
+  - Workspace sandbox (no access outside workspace)
+  - Validate command allowlist
+  - Rate limiting + retries + circuit breaker
+  - Digest caching and prompt truncation
 
-Importantly, agents can either use the local machine as their workspace, or run inside ephemeral workspaces
-(e.g. in Docker or Kubernetes) using the Agent Server.
+---
 
-You can even use the SDK to build new developer experiences: it’s the engine behind the
-[OpenHands CLI](https://github.com/OpenHands/OpenHands-CLI) and [OpenHands Cloud](https://github.com/OpenHands/OpenHands).
+## Architecture
 
-Get started with some [examples](https://docs.openhands.dev/sdk/guides/hello-world) or [check out the docs](https://docs.openhands.dev/sdk) to learn more.
+**Components**
+- **UI**: React + Vite + Tailwind (`app/frontend/`)
+- **Backend**: FastAPI task runner (`app/backend/`)
+- **Agent Engine**: OpenHands SDK (`openhands-sdk/`, `openhands-tools/`)
+- **Providers**: Gemini + Azure MI (`app/backend/providers.py`)
+- **Sandbox**: file tool wrapper (`app/backend/sandbox_tools.py`)
+- **Artifacts**: `.openhands_runs/<task_id>/run.jsonl`, `summary.json`, `changes.patch`
 
-## Quick Start
+### System Diagram
 
-Here's what building with the SDK looks like:
-
-```python
-import os
-
-from openhands.sdk import LLM, Agent, Conversation, Tool
-from openhands.tools.file_editor import FileEditorTool
-from openhands.tools.task_tracker import TaskTrackerTool
-from openhands.tools.terminal import TerminalTool
-
-
-llm = LLM(
-    model="anthropic/claude-sonnet-4-5-20250929",
-    api_key=os.getenv("LLM_API_KEY"),
-)
-
-agent = Agent(
-    llm=llm,
-    tools=[
-        Tool(name=TerminalTool.name),
-        Tool(name=FileEditorTool.name),
-        Tool(name=TaskTrackerTool.name),
-    ],
-)
-
-cwd = os.getcwd()
-conversation = Conversation(agent=agent, workspace=cwd)
-
-conversation.send_message("Write 3 facts about the current project into FACTS.txt.")
-conversation.run()
-print("All done!")
+```mermaid
+flowchart LR
+  UI[React + Vite UI] -->|HTTP| API[FastAPI Backend]
+  API -->|Agent Run| SDK[OpenHands SDK]
+  SDK -->|Tools| Sandbox[Workspace Sandbox]
+  SDK -->|LLM Calls| Provider[Provider Layer]
+  Provider --> Gemini[Gemini]
+  Provider --> AzureMI[Azure OpenAI (Managed Identity)]
+  API --> Artifacts[.openhands_runs/<task_id>/*]
 ```
 
-For installation instructions and detailed setup, see the [Getting Started Guide](https://docs.openhands.dev/sdk/getting-started).
+### Run Task Sequence
 
-## Documentation
+```mermaid
+sequenceDiagram
+  participant U as User
+  participant UI as Codex UI
+  participant API as FastAPI Backend
+  participant SDK as OpenHands SDK
+  participant LLM as Provider
+  participant FS as Workspace
 
-For detailed documentation, tutorials, and API reference, visit:
+  U->>UI: Submit task
+  UI->>API: POST /api/tasks
+  API->>SDK: Run agent
+  SDK->>LLM: LLM call (throttled)
+  SDK->>FS: Read/write within workspace
+  SDK-->>API: Events
+  API-->>UI: Logs + status
+  API->>FS: Generate changes.patch
+  UI->>API: GET /api/tasks/{id}/patch
+```
 
-**[https://docs.openhands.dev/sdk](https://docs.openhands.dev/sdk)**
+### Explain Repo Sequence (optional)
 
-The documentation includes:
-- [Getting Started Guide](https://docs.openhands.dev/sdk/getting-started) - Installation and setup
-- [Architecture & Core Concepts](https://docs.openhands.dev/sdk/arch/overview) - Agents, tools, workspaces, and more
-- [Guides](https://docs.openhands.dev/sdk/guides/hello-world) - Hello World, custom tools, MCP, skills, and more
-- [API Reference](https://docs.openhands.dev/sdk/guides/agent-server/api-reference/server-details/alive) - Agent Server REST API documentation
+```mermaid
+sequenceDiagram
+  participant UI as Codex UI
+  participant API as FastAPI Backend
+  participant SDK as OpenHands SDK
+  participant LLM as Provider
 
-## Examples
+  UI->>API: POST /api/analyze/explain-repo
+  API->>API: Build repo digest (cached)
+  API->>SDK: Run short analysis
+  SDK->>LLM: LLM call (throttled)
+  SDK-->>API: Summary JSON
+  API-->>UI: summary_markdown + key_files
+```
 
-The `examples/` directory contains comprehensive usage examples:
+---
 
-- **Standalone SDK** (`examples/01_standalone_sdk/`) - Basic agent usage, custom tools, and microagents
-- **Remote Agent Server** (`examples/02_remote_agent_server/`) - Client-server architecture and WebSocket connections
-- **GitHub Workflows** (`examples/03_github_workflows/`) - CI/CD integration and automated workflows
-
-## Contributing
-
-For development setup, testing, and contribution guidelines, see [DEVELOPMENT.md](DEVELOPMENT.md).
-
-## Community
-
-- [Join Slack](https://openhands.dev/joinslack) - Connect with the OpenHands community
-- [GitHub Repository](https://github.com/OpenHands/agent-sdk) - Source code and issues
-- [Documentation](https://docs.openhands.dev/sdk) - Complete documentation
-
-## Cite
+## Repository Layout
 
 ```
-@misc{wang2025openhandssoftwareagentsdk,
-      title={The OpenHands Software Agent SDK: A Composable and Extensible Foundation for Production Agents}, 
-      author={Xingyao Wang and Simon Rosenberg and Juan Michelini and Calvin Smith and Hoang Tran and Engel Nyst and Rohit Malhotra and Xuhui Zhou and Valerie Chen and Robert Brennan and Graham Neubig},
-      year={2025},
-      eprint={2511.03690},
-      archivePrefix={arXiv},
-      primaryClass={cs.SE},
-      url={https://arxiv.org/abs/2511.03690}, 
-}
+app/
+  backend/                # FastAPI backend, providers, sandbox
+  frontend/               # React + Vite UI
+examples/                 # SDK examples
+openhands-sdk/            # Core SDK
+openhands-tools/          # Tool implementations
+openhands-workspace/      # Workspace management
+openhands-agent-server/   # Agent server runtime
+my_agent_runner.py        # CLI runner
+.env.example              # Environment template (no secrets)
 ```
+
+Key implementation files:
+- Provider logic: `app/backend/providers.py`
+- Throttling/budgeting: `app/backend/llm_call_manager.py`, `app/backend/budgets.py`
+- Repo digest: `app/backend/repo_digest.py`
+- Sandbox: `app/backend/sandbox_tools.py`
+
+---
+
+## Quickstart (Local - Gemini)
+
+### Prereqs
+- **Python 3.12** (see `.python-version`)
+- **Node.js 18+**
+- **uv** (recommended for Python deps)
+
+### Setup (Mac/Linux)
+```bash
+python -m venv .venv
+source .venv/bin/activate
+uv sync --dev
+
+cd app/frontend
+npm install
+cd ../..
+
+cp .env.example .env
+```
+
+### Setup (Windows notes)
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+uv sync --dev
+
+cd app\frontend
+npm install
+cd ..\..
+
+copy .env.example .env
+```
+
+### Configure .env (no secrets in README)
+```bash
+# Gemini (local dev)
+GEMINI_API_KEY=...
+LLM_MODEL=gemini/gemini-2.0-flash
+VITE_API_BASE_URL=http://localhost:8000
+```
+
+> **Never commit `.env`.** It is ignored by git, and `.env.example` is provided.
+
+### Run
+```bash
+# backend
+uv run uvicorn app.backend.main:app --reload --port 8000
+
+# frontend
+cd app/frontend
+npm run dev
+```
+
+Open: `http://localhost:5173`
+
+### Example Usage
+- **Run Task**: from the UI, enter workspace path + task
+- **Explain Repo**: UI > Repo Tools > Explain Repo
+- **Diagram**: UI > Repo Tools > Generate Diagram
+
+---
+
+## Provider Configuration
+
+### A) Gemini (local dev)
+Required env vars:
+- `GEMINI_API_KEY`
+- `LLM_MODEL`
+
+Codex mitigates rate limits with:
+- Concurrency limits + minimum spacing
+- Retry/backoff + circuit breaker
+- Turn/tool budgets
+- Digest caching and prompt truncation
+
+### B) Azure OpenAI with Managed Identity (enterprise)
+Required env vars:
+- `AZURE_OPENAI_ENDPOINT`
+- `AZURE_OPENAI_DEPLOYMENT` **(deployment name, not raw model name)**
+- `AZURE_OPENAI_API_VERSION`
+- `AZURE_MANAGED_IDENTITY_CLIENT_ID` (optional for user-assigned MI)
+- `AZURE_OPENAI_DEPLOYMENTS` (optional comma list for UI presets)
+
+How it works:
+- Codex uses **ManagedIdentityCredential** (no API keys)
+- AAD token scope: `https://cognitiveservices.azure.com/.default`
+- Each request refreshes tokens safely
+
+Azure prerequisites:
+- [ ] VM has **Managed Identity** enabled
+- [ ] Identity has **RBAC** on Azure OpenAI resource (e.g. `Cognitive Services OpenAI User`)
+- [ ] Deployments exist for GPT-4o / GPT-5.1 (use deployment names in config)
+
+Recommended throttling defaults for Azure:
+```
+LLM_MAX_CONCURRENCY_AZURE=2
+LLM_MIN_INTERVAL_MS_AZURE=250
+```
+
+---
+
+## CLI Runner (Optional)
+
+```bash
+python my_agent_runner.py \
+  --workspace "/path/to/repo" \
+  --task "Summarize this repo" \
+  --provider gemini
+```
+
+Azure MI:
+```bash
+python my_agent_runner.py \
+  --workspace "/path/to/repo" \
+  --task "Refactor error handling" \
+  --provider azure_mi
+```
+
+Artifacts are written to:
+```
+.openhands_runs/<task_id>/
+  run.jsonl
+  summary.json
+  changes.patch
+```
+
+---
+
+## Validation Commands (Allowlist)
+
+Pass validate commands via UI or CLI (semicolon-separated):
+```
+pytest; python -m pytest; npm test; npm run build; ruff; mypy; cmake --build; ctest; make; ninja; git diff; git status
+```
+
+If a command is not in the allowlist, the run fails with a clear error and logs it to `run.jsonl`.
+
+---
+
+## Troubleshooting
+
+**429 Too Many Requests**
+- The provider is rate limiting. Codex will queue, retry, and back off.
+- Adjust `LLM_MAX_CONCURRENCY_*` and `LLM_MIN_INTERVAL_MS_*`.
+
+**Missing env vars**
+- Check `.env` or environment variables. Errors are logged in `summary.json`.
+
+**Workspace path invalid**
+- The path must exist and be a directory. The sandbox blocks traversal.
+
+**Azure RBAC/auth errors**
+- Ensure Managed Identity is enabled and has RBAC on the Azure OpenAI resource.
+- Confirm deployment names and API version.
+
+Where to look:
+- `.openhands_runs/<task_id>/run.jsonl`
+- `.openhands_runs/<task_id>/summary.json`
+- Backend console logs
+
+---
+
+## Security Notes
+
+- **Never commit `.env`** (use `.env.example` only)
+- Workspace sandbox blocks access outside the repo
+- `.env` files are blocked from reads
+- All tool actions and outputs are logged to `run.jsonl`
+- �Apply patch� is gated and can be disabled via repo scope
+
+---
+
+## License / Disclaimer
+
+This repository builds on the **OpenHands SDK** (see `openhands-sdk/`).
+
+Use Codex responsibly. Always review patches before applying them.
+
+See `LICENSE` for details.
