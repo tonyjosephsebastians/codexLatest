@@ -126,7 +126,9 @@ export default function Tools() {
         azure_config:
           provider === "azure_mi" ? buildAzureConfigPayload(azureConfig) : null
       });
-      setSummary(data.summary_markdown || "");
+      const summaryText =
+        data.summary_markdown || data.summary || data.message || "";
+      setSummary(summaryText);
       setKeyFiles(data.key_files || []);
       setQueuedMs(data.queued_ms ?? null);
       localStorage.setItem("qualityMode", qualityMode);

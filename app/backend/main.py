@@ -27,6 +27,7 @@ from app.backend.models import (
 )
 from app.backend.runner import TaskManager
 from app.backend.storage import patch_path, read_log_lines
+from openhands.sdk.conversation.exceptions import ConversationRunError
 
 
 load_dotenv()
@@ -43,6 +44,17 @@ async def rate_limited_handler(_request: Request, exc: RateLimitedError):
             "message": str(exc),
             "retry_after_seconds": exc.retry_after_seconds,
             "provider": exc.provider,
+        },
+    )
+
+
+@app.exception_handler(ConversationRunError)
+async def conversation_error_handler(_request: Request, exc: ConversationRunError):
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "llm_error",
+            "message": str(exc),
         },
     )
 

@@ -51,14 +51,16 @@ class ThrottledLLM(LLM):
 
     def completion(self, *args, **kwargs):  # type: ignore[override]
         manager = self.call_manager
+        parent_completion = super().completion
         return manager.call(
-            self.provider_name, lambda: super().completion(*args, **kwargs)
+            self.provider_name, lambda: parent_completion(*args, **kwargs)
         )
 
     def responses(self, *args, **kwargs):  # type: ignore[override]
         manager = self.call_manager
+        parent_responses = super().responses
         return manager.call(
-            self.provider_name, lambda: super().responses(*args, **kwargs)
+            self.provider_name, lambda: parent_responses(*args, **kwargs)
         )
 
 
@@ -75,19 +77,21 @@ class ManagedIdentityLLM(LLM):
 
     def completion(self, *args, **kwargs):  # type: ignore[override]
         manager = self.call_manager
+        parent_completion = super().completion
 
         def _call():
             self._refresh_token()
-            return super().completion(*args, **kwargs)
+            return parent_completion(*args, **kwargs)
 
         return manager.call(self.provider_name, _call)
 
     def responses(self, *args, **kwargs):  # type: ignore[override]
         manager = self.call_manager
+        parent_responses = super().responses
 
         def _call():
             self._refresh_token()
-            return super().responses(*args, **kwargs)
+            return parent_responses(*args, **kwargs)
 
         return manager.call(self.provider_name, _call)
 
@@ -109,6 +113,18 @@ def _clean_value(value: str | None) -> str | None:
     return stripped or None
 
 
+def _normalize_gemini_model(raw: str) -> str:
+    model = raw.strip()
+    lowered = model.lower()
+    if lowered.startswith("vertex") or lowered.startswith("vertex_ai"):
+        raise ValueError(
+            "Gemini provider must use Gemini API models (prefix with 'gemini/')."
+        )
+    if "/" not in model and lowered.startswith("gemini"):
+        return f"gemini/{model}"
+    return model
+
+
 def create_llm(
     provider: ProviderName,
     llm_config: LLMConfig | None = None,
@@ -125,7 +141,8 @@ def create_llm(
     manager = get_llm_call_manager()
     if provider == "gemini":
         api_key = _require_env("GEMINI_API_KEY")
-        model = config.model_override or _require_env("LLM_MODEL")
+        raw_model = config.model_override or _require_env("LLM_MODEL")
+        model = _normalize_gemini_model(raw_model)
         return ThrottledLLM(
             model=model,
             api_key=SecretStr(api_key),

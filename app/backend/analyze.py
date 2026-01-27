@@ -17,7 +17,7 @@ from app.backend.security import resolve_workspace_root
 from openhands.sdk import Agent, Conversation, Tool
 from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation.base import BaseConversation
-from openhands.sdk.event import MessageEvent
+from openhands.sdk.event import MessageEvent, ObservationEvent
 from openhands.sdk.llm.message import content_to_str
 
 
@@ -25,11 +25,15 @@ logger = logging.getLogger(__name__)
 
 
 def _extract_last_agent_message(conversation: BaseConversation) -> str:
+    fallback_text = ""
     for event in reversed(list(conversation.state.events)):
         if isinstance(event, MessageEvent) and event.source == "agent":
             parts = content_to_str(event.llm_message.content)
             return "".join(parts).strip()
-    return ""
+        if not fallback_text and isinstance(event, ObservationEvent):
+            if event.observation and event.observation.text:
+                fallback_text = event.observation.text.strip()
+    return fallback_text
 
 
 def _run_analysis(
@@ -105,6 +109,38 @@ def _parse_json_response(raw: str) -> dict:
         return {}
 
 
+def _normalize_explain_response(raw: str, data: dict, queued_ms: int | None) -> dict:
+    summary = ""
+    key_files = []
+    if isinstance(data, dict):
+        summary = data.get("summary_markdown") or data.get("summary") or ""
+        key_files = data.get("key_files") or data.get("files") or []
+    if not isinstance(summary, str):
+        try:
+            summary = json.dumps(summary, indent=2)
+        except TypeError:
+            summary = str(summary)
+    if not summary.strip():
+        summary = raw or ""
+    normalized_files = []
+    if isinstance(key_files, list):
+        for item in key_files:
+            if isinstance(item, dict):
+                path = str(item.get("path", "")).strip()
+                reason = str(item.get("reason", "")).strip()
+                if path or reason:
+                    normalized_files.append({"path": path, "reason": reason})
+            elif isinstance(item, str):
+                normalized_files.append(
+                    {"path": item.strip(), "reason": "Referenced by agent"}
+                )
+    return {
+        "summary_markdown": summary,
+        "key_files": normalized_files,
+        "queued_ms": queued_ms,
+    }
+
+
 def explain_repo(
     workspace: str,
     provider: ProviderName,
@@ -132,10 +168,7 @@ def explain_repo(
         azure_config=azure_config,
     )
     data = _parse_json_response(raw)
-    if not data:
-        return {"summary_markdown": raw, "key_files": [], "queued_ms": queued_ms}
-    data["queued_ms"] = queued_ms
-    return data
+    return _normalize_explain_response(raw, data, queued_ms)
 
 
 def architecture_diagram(
