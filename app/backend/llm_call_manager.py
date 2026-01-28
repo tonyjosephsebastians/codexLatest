@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import random
+import re
 import threading
 import time
 from collections import deque
@@ -185,12 +187,19 @@ class LLMCallManager:
                 except ValueError:
                     return None
         msg = str(exc)
-        for token in ("retry in", "retry after", "retryDelay"):
+        if "retryDelay" in msg:
+            match = re.search(r"retryDelay\"?\s*:\s*\"?([0-9]+(?:\.[0-9]+)?)s", msg)
+            if match:
+                try:
+                    return int(float(match.group(1)))
+                except ValueError:
+                    return None
+        for token in ("retry in", "retry after"):
             if token in msg:
-                digits = "".join(ch for ch in msg if ch.isdigit())
-                if digits:
+                match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*s", msg)
+                if match:
                     try:
-                        return int(digits)
+                        return int(float(match.group(1)))
                     except ValueError:
                         return None
         return None
@@ -249,6 +258,7 @@ class LLMCallManager:
                 base_delay = float(retry_cfg.get("retry_min_wait", base_delay))
                 max_delay = float(retry_cfg.get("retry_max_wait", max_delay))
                 factor = float(retry_cfg.get("retry_multiplier", factor))
+            max_delay = min(max_delay, 30.0)
             max_attempts = max(1, max_attempts)
 
             attempt = 0
@@ -289,6 +299,9 @@ class LLMCallManager:
                     delay_seconds += random.uniform(0.0, jitter_max)
                     if retry_after is not None:
                         delay_seconds = max(delay_seconds, float(retry_after))
+                    delay_seconds = min(delay_seconds, max_delay)
+                    if not math.isfinite(delay_seconds):
+                        delay_seconds = max_delay
                     self._log_event(
                         "llm_retry",
                         "retrying LLM call",

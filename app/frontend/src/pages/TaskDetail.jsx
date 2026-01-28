@@ -2,6 +2,12 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { apiGet, apiPost } from "../lib/api.js";
+import {
+  Badge,
+  ButtonPrimary,
+  ButtonSecondary,
+  Card
+} from "../components/ui.jsx";
 
 export default function TaskDetail() {
   const { taskId } = useParams();
@@ -115,11 +121,14 @@ export default function TaskDetail() {
   };
 
   return (
-    <div className="grid gap-6">
-      <section className="card">
-        <h2 className="card-title">Task {taskId}</h2>
-        <div className="mt-3 flex flex-wrap items-center gap-3">
-          <span className="chip">Status: {status}</span>
+    <div className="h-full overflow-auto px-4 py-4">
+      <div className="grid gap-4">
+      <Card className="p-4">
+        <h2 className="text-base font-semibold text-slate-900">Task {taskId}</h2>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <Badge className="bg-primary-50 text-primary-700">
+            Status: {status}
+          </Badge>
           <span className="text-sm text-slate-600">
             Started: {startedAt || "-"}
           </span>
@@ -133,40 +142,39 @@ export default function TaskDetail() {
           </p>
         ) : null}
         {error ? <p className="mt-3 text-sm text-red-600">{error}</p> : null}
-      </section>
+      </Card>
 
-      <section className="card">
-        <h3 className="card-title">Live logs</h3>
-        <div className="mono-panel mt-4 max-h-[360px] overflow-auto whitespace-pre-wrap">
+      <Card className="p-4">
+        <h3 className="text-sm font-semibold text-slate-900">Live logs</h3>
+        <div className="mono-panel mt-3 max-h-[360px] overflow-auto whitespace-pre-wrap">
           {logs.length ? logs.map((line, idx) => <div key={idx}>{line}</div>) : ""}
         </div>
-      </section>
+      </Card>
 
-      <section className="card">
+      <Card className="p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h3 className="card-title">Patch</h3>
-            <p className="card-subtitle">
+            <h3 className="text-sm font-semibold text-slate-900">Patch</h3>
+            <p className="text-xs text-slate-600">
               Diff ready for review. Refresh after the task finishes.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <button className="button-secondary" type="button" onClick={loadPatch}>
+            <ButtonSecondary type="button" onClick={loadPatch}>
               Refresh Patch
-            </button>
-            <button className="button-secondary" type="button" onClick={copyPatch}>
+            </ButtonSecondary>
+            <ButtonSecondary type="button" onClick={copyPatch}>
               Copy
-            </button>
-            <button className="button-secondary" type="button" onClick={downloadPatch}>
+            </ButtonSecondary>
+            <ButtonSecondary type="button" onClick={downloadPatch}>
               Download
-            </button>
-            <button
-              className="button-primary"
+            </ButtonSecondary>
+            <ButtonPrimary
               type="button"
               onClick={() => setShowModal(true)}
             >
               Apply Patch
-            </button>
+            </ButtonPrimary>
           </div>
         </div>
         <div className="mono-panel mt-4 max-h-[320px] overflow-auto whitespace-pre">
@@ -177,19 +185,20 @@ export default function TaskDetail() {
             Apply result: {applyResult}
           </p>
         ) : null}
-      </section>
+      </Card>
 
       {showModal ? (
         <div className="fixed inset-0 z-20 flex items-center justify-center bg-slate-900/50 p-6">
-          <div className="card max-w-lg">
-            <h3 className="card-title">Apply patch?</h3>
-            <p className="card-subtitle mt-2">
+          <Card className="max-w-lg p-4">
+            <h3 className="text-sm font-semibold text-slate-900">
+              Apply patch?
+            </h3>
+            <p className="mt-2 text-xs text-slate-600">
               This will apply the patch directly to your workspace. Confirm to
               proceed.
             </p>
-            <div className="mt-5 flex flex-wrap gap-2">
-              <button
-                className="button-primary"
+            <div className="mt-4 flex flex-wrap gap-2">
+              <ButtonPrimary
                 type="button"
                 onClick={() => {
                   setShowModal(false);
@@ -197,18 +206,15 @@ export default function TaskDetail() {
                 }}
               >
                 Confirm Apply
-              </button>
-              <button
-                className="button-secondary"
-                type="button"
-                onClick={() => setShowModal(false)}
-              >
+              </ButtonPrimary>
+              <ButtonSecondary type="button" onClick={() => setShowModal(false)}>
                 Cancel
-              </button>
+              </ButtonSecondary>
             </div>
-          </div>
+          </Card>
         </div>
       ) : null}
+      </div>
     </div>
   );
 }

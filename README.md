@@ -14,6 +14,9 @@ Unlike Cursor/Copilot (autocomplete inside an editor), Codex is **task-oriented*
 - **Run Task**: stream logs, generate a patch, optionally apply it
 - **Explain Repo**: cached + token optimized repo digest for quick summaries
 - **Architecture Diagram**: Mermaid output rendered in the UI
+- **Modes**:
+  - **Wiki**: repo docs + right-side chat
+  - **Editor**: VS Code-style file explorer + code viewer + task panel
 - **Providers**:
   - **Gemini** (local dev)
   - **Azure OpenAI** via **Managed Identity** (enterprise, no API keys)
@@ -32,6 +35,7 @@ Unlike Cursor/Copilot (autocomplete inside an editor), Codex is **task-oriented*
 - **Providers**: Gemini + Azure MI (`app/backend/providers.py`)
 - **Sandbox**: file tool wrapper (`app/backend/sandbox_tools.py`)
 - **Artifacts**: `.openhands_runs/task_id/run.jsonl`, `summary.json`, `changes.patch`
+- **Workspace registry**: `.openhands_runs/workspaces.json`
 
 ### System Diagram
 
@@ -68,7 +72,7 @@ sequenceDiagram
   UI->>API: GET /api/tasks/{id}/patch
 ```
 
-### Explain Repo Sequence (optional)
+### Wiki (Explain Repo) Sequence
 
 ```mermaid
 sequenceDiagram
@@ -104,6 +108,7 @@ Key implementation files:
 - Provider logic: `app/backend/providers.py`
 - Throttling/budgeting: `app/backend/llm_call_manager.py`, `app/backend/budgets.py`
 - Repo digest: `app/backend/repo_digest.py`
+- Workspace registry: `app/backend/workspaces.py`
 - Sandbox: `app/backend/sandbox_tools.py`
 
 ## Quickstart (Local - Gemini)
@@ -161,10 +166,13 @@ npm run dev
 
 Open: `http://localhost:5173`
 
-### Example Usage
-- **Run Task**: from the UI, enter workspace path + task
-- **Explain Repo**: UI > Repo Tools > Explain Repo
-- **Diagram**: UI > Repo Tools > Generate Diagram
+## UI: Open Folder + Modes
+
+- **Open Folder**: Click **Open Folder** in the top bar, paste a local path, or select a recent workspace.
+- **Wiki mode**: Auto-generated docs + right-side chat. Refresh docs and generate diagrams from the page.
+- **Editor mode**: VS Code-style explorer + code viewer + task panel with logs and patch view.
+
+The workspace selector remembers the last workspace in localStorage.
 
 ## Provider Configuration
 
