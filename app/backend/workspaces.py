@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import threading
 import uuid
 from dataclasses import dataclass
@@ -118,3 +119,10 @@ def resolve_workspace(workspace_id: str | None, workspace_path: str | None) -> P
     if workspace_path:
         return resolve_workspace_root(workspace_path)
     raise ValueError("workspace_id or workspace path is required")
+
+
+def clear_workspace_memory(workspace_id: str) -> None:
+    # Reset local repo-memory/cache artifacts for a fresh analysis start.
+    memory_root = Path(".codex_memory") / workspace_id
+    if memory_root.exists():
+        shutil.rmtree(memory_root)

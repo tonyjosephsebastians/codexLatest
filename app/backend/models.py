@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 TaskStatus = Literal["queued", "running", "succeeded", "failed"]
+ProviderLiteral = Literal["openai", "azure", "gemini", "azure_mi"]
 
 
 class LLMParams(BaseModel):
@@ -52,7 +53,7 @@ class TaskRequest(BaseModel):
     workspace: str | None = None
     workspace_id: str | None = None
     task: str
-    provider: Literal["gemini", "azure_mi"]
+    provider: ProviderLiteral
     validate_commands: str | None = Field(default=None, alias="validate")
     llm_params: LLMParams | None = None
     repo_scope: RepoScopeRequest | None = None
@@ -88,7 +89,7 @@ class ApplyPatchRequest(BaseModel):
 class ExplainRepoRequest(BaseModel):
     workspace: str | None = None
     workspace_id: str | None = None
-    provider: Literal["gemini", "azure_mi"]
+    provider: ProviderLiteral
     llm_params: LLMParams | None = None
     repo_scope: RepoScopeRequest | None = None
     quality_mode: Literal["speed", "quality", "deep"] | None = None
@@ -111,7 +112,7 @@ class ExplainRepoResponse(BaseModel):
 class ArchitectureDiagramRequest(BaseModel):
     workspace: str | None = None
     workspace_id: str | None = None
-    provider: Literal["gemini", "azure_mi"]
+    provider: ProviderLiteral
     diagram_type: Literal["mermaid_c4", "mermaid_flow", "sequence"]
     llm_params: LLMParams | None = None
     repo_scope: RepoScopeRequest | None = None
@@ -146,6 +147,11 @@ class WorkspaceOpenRequest(BaseModel):
     path: str
 
 
+class WorkspaceMemoryResetResponse(BaseModel):
+    workspace_id: str
+    status: Literal["cleared"]
+
+
 class RepoTreeResponse(BaseModel):
     tree: dict[str, Any]
 
@@ -159,16 +165,43 @@ class RepoFileResponse(BaseModel):
     is_binary: bool = False
 
 
+class RepoFileUpdateRequest(BaseModel):
+    workspace_id: str | None = None
+    workspace: str | None = None
+    path: str
+    content: str
+    include_globs: str | None = None
+    exclude_globs: str | None = None
+
+
+class RepoFileUpdateResponse(BaseModel):
+    path: str
+    last_modified: str
+    bytes_written: int
+
+
 class ChatMessage(BaseModel):
     role: Literal["user", "assistant", "system"]
     content: str
+
+
+class EditorSelection(BaseModel):
+    start_line: int
+    end_line: int
+
+
+class EditorContext(BaseModel):
+    file_path: str | None = None
+    selection: EditorSelection | None = None
+    open_files: list[str] | None = None
+    file_mentions: list[str] | None = None
 
 
 class WikiChatRequest(BaseModel):
     workspace_id: str | None = None
     workspace: str | None = None
     messages: list[ChatMessage]
-    provider: Literal["gemini", "azure_mi"]
+    provider: ProviderLiteral
     llm_params: LLMParams | None = None
     repo_scope: RepoScopeRequest | None = None
     quality_mode: Literal["speed", "quality", "deep"] | None = None
@@ -183,7 +216,7 @@ class WikiChatResponse(BaseModel):
 class WikiExplainRequest(BaseModel):
     workspace: str | None = None
     workspace_id: str | None = None
-    provider: Literal["gemini", "azure_mi"]
+    provider: ProviderLiteral
     llm_params: LLMParams | None = None
     repo_scope: RepoScopeRequest | None = None
     quality_mode: Literal["speed", "quality", "deep"] | None = None
@@ -202,7 +235,7 @@ class FileSummaryRequest(BaseModel):
     workspace: str | None = None
     workspace_id: str | None = None
     path: str
-    provider: Literal["gemini", "azure_mi"]
+    provider: ProviderLiteral
     llm_params: LLMParams | None = None
     repo_scope: RepoScopeRequest | None = None
     quality_mode: Literal["speed", "quality", "deep"] | None = None
@@ -215,3 +248,90 @@ class FileSummaryResponse(BaseModel):
     generated_at: str | None = None
     path: str
     queued_ms: int | None = None
+
+
+class EditorChatRequest(BaseModel):
+    workspace_id: str | None = None
+    workspace: str | None = None
+    messages: list[ChatMessage]
+    context: EditorContext | None = None
+    provider: ProviderLiteral
+    llm_params: LLMParams | None = None
+    repo_scope: RepoScopeRequest | None = None
+    quality_mode: Literal["speed", "quality", "deep"] | None = None
+    azure_config: AzureConfig | None = None
+
+
+class ProposedChanges(BaseModel):
+    type: Literal["patch"]
+    patch: str
+    files_changed: list[str] = []
+    diff_metadata: dict[str, Any] | None = None
+
+
+class EditorChatResponse(BaseModel):
+    assistant_message: ChatMessage
+    proposed_changes: ProposedChanges | None = None
+    queued_ms: int | None = None
+
+
+class StepEvent(BaseModel):
+    event_type: str
+    message: str
+
+
+class ChatRequest(BaseModel):
+    thread_id: str | None = None
+    workspace_id: str | None = None
+    workspace: str | None = None
+    messages: list[ChatMessage]
+    context: EditorContext | None = None
+    provider: ProviderLiteral
+    llm_params: LLMParams | None = None
+    repo_scope: RepoScopeRequest | None = None
+    quality_mode: Literal["speed", "quality", "deep"] | None = None
+    azure_config: AzureConfig | None = None
+
+
+class ChatResponse(BaseModel):
+    thread_id: str
+    assistant_message: ChatMessage
+    proposed_changes: ProposedChanges | None = None
+    step_events: list[StepEvent] = []
+    queued_ms: int | None = None
+    context_pack: dict[str, Any] | None = None
+    citations: list[dict[str, Any]] = []
+
+
+class ThreadCreateRequest(BaseModel):
+    title: str | None = None
+    workspace_id: str | None = None
+
+
+class ThreadUpdateRequest(BaseModel):
+    title: str | None = None
+    pinned: bool | None = None
+    workspace_id: str | None = None
+    messages: list[dict[str, Any]] | None = None
+
+
+class ThreadItem(BaseModel):
+    thread_id: str
+    title: str
+    pinned: bool = False
+    workspace_id: str | None = None
+    created_at: str
+    updated_at: str
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ThreadListResponse(BaseModel):
+    threads: list[ThreadItem]
+
+
+class PatchApplyRequest(BaseModel):
+    workspace_id: str | None = None
+    workspace: str | None = None
+    patch: str
+    confirm: bool = Field(default=False, description="Must be true to apply")
+    repo_scope: RepoScopeRequest | None = None

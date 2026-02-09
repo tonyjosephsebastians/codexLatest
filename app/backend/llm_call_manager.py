@@ -102,6 +102,9 @@ class LLMCallManager:
             if provider == "gemini":
                 max_concurrency = self._get_env_int("LLM_MAX_CONCURRENCY_GEMINI", 1)
                 min_interval_ms = self._get_env_int("LLM_MIN_INTERVAL_MS_GEMINI", 1200)
+            elif provider == "openai":
+                max_concurrency = self._get_env_int("LLM_MAX_CONCURRENCY_OPENAI", 2)
+                min_interval_ms = self._get_env_int("LLM_MIN_INTERVAL_MS_OPENAI", 400)
             else:
                 legacy_concurrency = self._get_env_int(
                     "LLM_MAX_CONCURRENCY_AZURE_MI", 2

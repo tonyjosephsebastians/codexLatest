@@ -10,7 +10,12 @@ from app.backend.models import RepoScopeRequest
 from app.backend.security import ensure_within_workspace
 
 
-DEFAULT_EXCLUDE_GLOBS = ".git/**,node_modules/**,dist/**,build/**,.openhands_runs/**"
+DEFAULT_EXCLUDE_GLOBS = (
+    ".git/**,node_modules/**,dist/**,build/**,.openhands_runs/**,"
+    ".codex_memory/**,__pycache__/**,**/__pycache__/**,*.pyc,*.pyo,"
+    ".venv/**,venv/**,env/**,.mypy_cache/**,.pytest_cache/**,"
+    ".ruff_cache/**,coverage/**,.coverage,*.log"
+)
 _SENSITIVE_NAMES = (".env",)
 
 _CURRENT_SCOPE: ContextVar[ResolvedRepoScope | None] = ContextVar(

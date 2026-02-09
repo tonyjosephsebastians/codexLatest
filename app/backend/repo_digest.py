@@ -22,9 +22,7 @@ class RepoDigest:
 _CACHE: dict[str, tuple[float, RepoDigest]] = {}
 
 
-def _cache_key(
-    workspace_root: Path, scope: ResolvedRepoScope, git_hash: str
-) -> str:
+def _cache_key(workspace_root: Path, scope: ResolvedRepoScope, git_hash: str) -> str:
     include = ",".join(scope.include_globs)
     exclude = ",".join(scope.exclude_globs)
     return f"{workspace_root}|{git_hash}|{include}|{exclude}"
@@ -126,9 +124,7 @@ def _tail_lines(text: str, max_lines: int) -> str:
     return "\n".join(lines[-max_lines:])
 
 
-def _read_snippet(
-    path: Path, budget: Budget, logger: AuditLogger | None
-) -> str | None:
+def _read_snippet(path: Path, budget: Budget, logger: AuditLogger | None) -> str | None:
     try:
         raw = path.read_text(encoding="utf-8", errors="replace")
     except Exception:
@@ -272,6 +268,15 @@ def build_repo_digest(
             "build_systems": build_systems,
             "test_commands": test_commands,
             "file_count": len(files),
+            "files": [
+                {
+                    "path": path.relative_to(workspace_root).as_posix(),
+                    "language": _guess_languages([path])[0]
+                    if _guess_languages([path])
+                    else "unknown",
+                }
+                for path in files
+            ],
         },
     )
     _CACHE[key] = (now, digest)

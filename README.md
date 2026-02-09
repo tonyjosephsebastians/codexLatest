@@ -14,9 +14,18 @@ Unlike Cursor/Copilot (autocomplete inside an editor), Codex is **task-oriented*
 - **Run Task**: stream logs, generate a patch, optionally apply it
 - **Explain Repo**: cached + token optimized repo digest for quick summaries
 - **Architecture Diagram**: Mermaid output rendered in the UI
+- **Codex-style Layout**:
+  - Left rail for workspace + files + threads
+  - Center stage for chat/wiki/editor
+  - Right inspector drawer (diffs/context/activity/settings), toggled from top-right
 - **Modes**:
-  - **Wiki**: repo docs + right-side chat
-  - **Editor**: VS Code-style file explorer + code viewer + task panel
+  - **Wiki**: structured docs with TOC + Mermaid rendering
+  - **Editor**: Monaco viewer/editor with local save support
+- **Local Editing**:
+  - Edit file content in Monaco and save directly to workspace files
+  - Patch apply supports non-git local folders (best-effort unified diff apply)
+- **Workspace Memory Controls**:
+  - Reset repo memory/cache per workspace from **Open Folder** modal
 - **Providers**:
   - **Gemini** (local dev)
   - **Azure OpenAI** via **Managed Identity** (enterprise, no API keys)
@@ -36,6 +45,7 @@ Unlike Cursor/Copilot (autocomplete inside an editor), Codex is **task-oriented*
 - **Sandbox**: file tool wrapper (`app/backend/sandbox_tools.py`)
 - **Artifacts**: `.openhands_runs/task_id/run.jsonl`, `summary.json`, `changes.patch`
 - **Workspace registry**: `.openhands_runs/workspaces.json`
+- **Repo memory**: `.codex_memory/<workspace_id>/` (index/chunks/cache/wiki)
 
 ### System Diagram
 
@@ -168,11 +178,24 @@ Open: `http://localhost:5173`
 
 ## UI: Open Folder + Modes
 
-- **Open Folder**: Click **Open Folder** in the top bar, paste a local path, or select a recent workspace.
-- **Wiki mode**: Auto-generated docs + right-side chat. Refresh docs and generate diagrams from the page.
-- **Editor mode**: VS Code-style explorer + code viewer + task panel with logs and patch view.
+- **Open Folder**: Click **Open Folder** in the left rail, paste a local path, or select a recent workspace.
+- **Reset Memory**: In the Open Folder modal, click **Reset** on a workspace to clear `.codex_memory/<workspace_id>/`.
+- **Wiki mode**: Auto-generated docs with TOC + Mermaid diagrams, rendered in the center stage.
+- **Editor mode**: Monaco code editor (read-only/edit toggle) with **Save** to local file.
+- **Panel toggles**:
+  - Left panel toggle: top-left header icon
+  - Right inspector toggle: top-right header icon
 
 The workspace selector remembers the last workspace in localStorage.
+
+## Core API Endpoints
+
+- `GET /api/repo/file` read file content in workspace sandbox
+- `PUT /api/repo/file` save file content (primary save path)
+- `POST /api/repo/file` save file content (compatibility fallback)
+- `DELETE /api/workspaces/{workspace_id}/memory` clear repo memory/cache
+- `POST /api/wiki/explain` generate repository wiki markdown + diagrams
+- `POST /api/patch/apply` apply patch to local folder (git or non-git mode)
 
 ## Provider Configuration
 
@@ -256,6 +279,9 @@ If a command is not in the allowlist, the run fails with a clear error and logs 
 
 **Workspace path invalid**
 - The path must exist and be a directory. The sandbox blocks traversal.
+
+**Save failed with `405 Method Not Allowed`**
+- Backend is likely running old code. Restart backend so `/api/repo/file` includes `PUT/POST`.
 
 **Azure RBAC/auth errors**
 - Ensure Managed Identity is enabled and has RBAC on the Azure OpenAI resource.

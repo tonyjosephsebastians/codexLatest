@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { RotateCcw } from "lucide-react";
 
 import { useWorkspace } from "../context/WorkspaceContext.jsx";
 import { ButtonPrimary, ButtonSecondary, Card, Input } from "./ui.jsx";
@@ -7,6 +8,7 @@ export default function WorkspaceModal() {
   const {
     workspaces,
     openWorkspace,
+    clearWorkspaceMemory,
     setIsModalOpen,
     activeWorkspaceId,
     setActiveWorkspaceId
@@ -91,9 +93,27 @@ export default function WorkspaceModal() {
                     <p className="font-semibold">{workspace.name}</p>
                     <p className="text-xs text-slate-500">{workspace.path}</p>
                   </div>
-                  <span className="text-xs uppercase text-slate-400">
-                    {workspace.workspace_type}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-50"
+                      title="Reset repo memory"
+                      onClick={async (event) => {
+                        event.stopPropagation();
+                        try {
+                          await clearWorkspaceMemory(workspace.workspace_id);
+                        } catch (err) {
+                          setError(err.message || "Failed to reset repo memory");
+                        }
+                      }}
+                    >
+                      <RotateCcw size={12} />
+                      Reset
+                    </button>
+                    <span className="text-xs uppercase text-slate-400">
+                      {workspace.workspace_type}
+                    </span>
+                  </div>
                 </button>
               ))
             ) : (

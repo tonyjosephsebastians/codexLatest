@@ -4,8 +4,10 @@ import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import time
+from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -14,6 +16,7 @@ from app.backend.llm_call_manager import RateLimitedError, llm_call_context
 from app.backend.llm_params import normalize_llm_params
 from app.backend.providers import ProviderName, create_llm
 from app.backend.repo_digest import build_repo_digest
+from app.backend.repo_memory import ensure_repo_memory
 from app.backend.repo_scope import repo_scope_context, resolve_repo_scope
 from app.backend.sandbox_tools import (  # noqa: F401
     ReadOnlySandboxedFileEditorTool,
@@ -124,7 +127,11 @@ def _repo_fingerprint(workspace_root: Path, scope) -> str:
 
 
 def _wiki_artifact_path(workspace_id: str) -> Path:
-    return Path(".openhands_runs") / "wiki" / workspace_id / "wiki.md"
+    return Path(".codex_memory") / workspace_id / "wiki.md"
+
+
+def _wiki_meta_path(workspace_id: str) -> Path:
+    return Path(".codex_memory") / workspace_id / "wiki.meta.json"
 
 
 def _wiki_cache_id(workspace_root: Path, workspace_id: str | None) -> str:
@@ -141,10 +148,45 @@ def _safe_mermaid_id(name: str, idx: int) -> str:
     return f"{base}{idx}"
 
 
+def _is_noise_rel_path(rel_path: str) -> bool:
+    path = rel_path.replace("\\", "/").lower().strip("/")
+    parts = [part for part in path.split("/") if part]
+    blocked_parts = {
+        "__pycache__",
+        "node_modules",
+        ".venv",
+        "venv",
+        "env",
+        ".git",
+        "dist",
+        "build",
+        ".codex_memory",
+        ".openhands_runs",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+    }
+    blocked_suffixes = (
+        ".pyc",
+        ".pyo",
+        ".log",
+        ".bin",
+        ".dll",
+        ".exe",
+        ".so",
+    )
+    if any(part in blocked_parts for part in parts):
+        return True
+    return path.endswith(blocked_suffixes)
+
+
 def _fallback_mermaid(workspace_root: Path, scope) -> str:
     entries = []
     for entry in sorted(workspace_root.iterdir(), key=lambda p: p.name.lower()):
         if scope.validate_path(entry) is not None:
+            continue
+        rel = entry.relative_to(workspace_root).as_posix()
+        if _is_noise_rel_path(rel):
             continue
         entries.append(entry)
         if len(entries) >= 10:
@@ -155,6 +197,127 @@ def _fallback_mermaid(workspace_root: Path, scope) -> str:
         label = entry.name + ("/" if entry.is_dir() else "")
         node_id = _safe_mermaid_id(entry.name, idx)
         lines.append(f'  {root_id} --> {node_id}["{label}"]')
+    return "\n".join(lines)
+
+
+def _extract_module(path: str) -> str:
+    parts = [part for part in path.split("/") if part]
+    if not parts:
+        return "(root)"
+    return parts[0] if len(parts) > 1 else "(root)"
+
+
+def _module_graph_mermaid_from_memory(memory, workspace_root: Path) -> str:
+    files = memory.repo_index.get("files", [])
+    symbols = memory.symbol_index.get("files", {})
+    module_nodes: dict[str, int] = defaultdict(int)
+    for item in files:
+        rel = str(item.get("path", "")).strip()
+        if not rel or _is_noise_rel_path(rel):
+            continue
+        module_nodes[_extract_module(rel)] += 1
+    top_modules = [
+        name
+        for name, _count in sorted(
+            module_nodes.items(), key=lambda item: item[1], reverse=True
+        )[:10]
+    ]
+    if not top_modules:
+        return f'flowchart LR\n  Root["{workspace_root.name}"]'
+
+    edges: dict[tuple[str, str], int] = defaultdict(int)
+    for rel_path, info in symbols.items():
+        if _is_noise_rel_path(rel_path):
+            continue
+        src_module = _extract_module(rel_path)
+        imports = info.get("imports", []) if isinstance(info, dict) else []
+        for imp in imports:
+            imp_text = str(imp).replace("\\", "/").strip(".")
+            if not imp_text:
+                continue
+            dest_module = imp_text.split("/")[0].split(".")[0]
+            if (
+                dest_module
+                and dest_module != src_module
+                and src_module in top_modules
+                and dest_module in top_modules
+            ):
+                edges[(src_module, dest_module)] += 1
+
+    lines = ["flowchart LR", f'  Root["{workspace_root.name}"]']
+    for idx, mod in enumerate(top_modules, start=1):
+        node = _safe_mermaid_id(mod, idx + 200)
+        lines.append(f'  Root --> {node}["{mod}"]')
+    if edges:
+        for idx, ((src, dest), _weight) in enumerate(
+            sorted(edges.items(), key=lambda item: -item[1])[:16], start=1
+        ):
+            src_node = _safe_mermaid_id(src, top_modules.index(src) + 201)
+            dest_node = _safe_mermaid_id(dest, top_modules.index(dest) + 201)
+            lines.append(f"  {src_node} --> {dest_node}")
+    return "\n".join(lines)
+
+
+def _extract_api_routes_from_repo(workspace_root: Path, scope) -> list[str]:
+    routes: list[str] = []
+    route_pattern = re.compile(
+        r"@(app|router)\.(get|post|put|patch|delete)\((['\"])(.+?)\3"
+    )
+    max_scanned = 220
+    scanned = 0
+    for candidate in sorted(
+        workspace_root.rglob("*"), key=lambda p: p.as_posix().lower()
+    ):
+        if scanned >= max_scanned:
+            break
+        if not candidate.is_file():
+            continue
+        if scope.validate_path(candidate) is not None:
+            continue
+        rel = candidate.relative_to(workspace_root).as_posix()
+        if _is_noise_rel_path(rel):
+            continue
+        if candidate.suffix.lower() not in {".py", ".ts", ".tsx", ".js", ".jsx"}:
+            continue
+        scanned += 1
+        try:
+            text = candidate.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        for match in route_pattern.finditer(text):
+            method = match.group(2).upper()
+            path = match.group(4).strip()
+            routes.append(f"{method} {path} ({rel}:L1-L120)")
+            if len(routes) >= 30:
+                return routes
+    return routes
+
+
+def _runtime_flow_mermaid_from_routes(routes: list[str]) -> str:
+    if not routes:
+        return (
+            "flowchart TD\n"
+            "  U[User] --> I[Chat Input]\n"
+            "  I --> C[Context Pack]\n"
+            "  C --> L[Single LLM Call]\n"
+            "  L --> R[Response / Patch]"
+        )
+    lines = [
+        "flowchart TD",
+        "  U[User] --> API[Backend API]",
+    ]
+    added_nodes: set[str] = set()
+    for idx, route in enumerate(routes[:8], start=1):
+        method, path_and_ref = route.split(" ", 1)
+        route_path = path_and_ref.split(" (", 1)[0]
+        label = f"{method} {route_path}"
+        node = f"R{idx}"
+        lines.append(f'  API --> {node}["{label}"]')
+        added_nodes.add(node)
+    for idx, node in enumerate(sorted(added_nodes), start=1):
+        lines.append(f"  {node} --> LLM[LLM / Analysis Engine]")
+        if idx == 1:
+            lines.append("  LLM --> OUT[Wiki / Chat / Patch Output]")
     return "\n".join(lines)
 
 
@@ -189,6 +352,9 @@ def _fallback_explain_response(workspace_root: Path, scope, digest) -> dict:
     for entry in sorted(workspace_root.iterdir(), key=lambda p: p.name.lower()):
         if scope.validate_path(entry) is not None:
             continue
+        rel = entry.relative_to(workspace_root).as_posix()
+        if _is_noise_rel_path(rel):
+            continue
         top_entries.append(entry.name + ("/" if entry.is_dir() else ""))
         if len(top_entries) >= 12:
             break
@@ -222,6 +388,116 @@ def _fallback_explain_response(workspace_root: Path, scope, digest) -> dict:
         "notes_markdown": notes,
         "queued_ms": None,
     }
+
+
+def _fallback_wiki_response(workspace_root: Path, scope, digest) -> str:
+    files = []
+    for item in digest.metadata.get("files", [])[:80]:
+        path = str(item.get("path", "")).strip()
+        if not path or _is_noise_rel_path(path):
+            continue
+        files.append(path)
+    top_files = files[:16]
+    modules: dict[str, list[str]] = {}
+    for path in files:
+        parts = path.split("/")
+        module = parts[0] if len(parts) > 1 else "(root)"
+        modules.setdefault(module, []).append(path)
+    module_lines: list[str] = []
+    for name, module_files in sorted(
+        modules.items(),
+        key=lambda pair: len(pair[1]),
+        reverse=True,
+    )[:8]:
+        sample = ", ".join(module_files[:3])
+        module_lines.append(
+            f"- `{name}`: {len(module_files)} files. Examples: {sample} "
+            f"(`{module_files[0]}:L1-L40`)"
+        )
+
+    run_hints = digest.metadata.get("build_systems", []) + digest.metadata.get(
+        "test_commands", []
+    )
+    if not run_hints:
+        run_hints = ["Not evident"]
+
+    refs = [f"- `{path}:L1-L40`" for path in top_files[:12]]
+    refs_text = "\n".join(refs) if refs else "- `README.md:L1-L40`"
+    languages = ", ".join(digest.metadata.get("languages", []) or ["Not evident"])
+    primary_ref = top_files[0] if top_files else "README.md"
+
+    route_hints = _extract_api_routes_from_repo(workspace_root, scope)
+    flow_mermaid = _runtime_flow_mermaid_from_routes(route_hints)
+
+    return "\n".join(
+        [
+            f"# Repository Wiki: {workspace_root.name}",
+            "",
+            "## Overview",
+            f"- Repository root: `{workspace_root}`.",
+            f"- Languages: {languages}.",
+            (
+                "- Primary responsibility inferred from layout and configs "
+                f"(`{primary_ref}:L1-L40`)."
+            ),
+            "",
+            "## High-Level Design (HLD)",
+            (
+                "- Main runtime is composed of source modules, configuration, "
+                "and entry commands."
+            ),
+            "- Top-level architecture is shown below.",
+            "",
+            "## Low-Level Design (LLD)",
+            "- Key implementation details are grouped by module/package boundaries.",
+            (
+                "- Function/class internals should be reviewed per file "
+                "references listed below."
+            ),
+            "",
+            "## Architecture",
+            "- Component relationships inferred from folder structure and key files.",
+            "",
+            "```mermaid",
+            _fallback_mermaid(workspace_root, scope),
+            "```",
+            "",
+            "## Key Modules",
+            *(module_lines if module_lines else ["- Not evident."]),
+            "",
+            "## Data Flow / Control Flow",
+            (
+                "- Request enters chat input, context pack is built, one "
+                "LLM call is made, patch/answer is returned."
+            ),
+            *[f"- API route: `{item}`" for item in route_hints[:6]],
+            "",
+            "```mermaid",
+            flow_mermaid,
+            "```",
+            "",
+            "## How to Run",
+            *[f"- `{hint}`" for hint in run_hints[:8]],
+            "",
+            "## How to Test",
+            *[
+                f"- `{cmd}`"
+                for cmd in (digest.metadata.get("test_commands", []) or ["Not evident"])
+            ][:8],
+            "",
+            "## Common Workflows",
+            "- `/wiki` for repository-level docs and diagrams.",
+            "- `/summarize @file:path` for focused file documentation.",
+            "- `/fix` or natural-language change requests to produce patch proposals.",
+            "",
+            "## Risks / TODOs",
+            "- Validate generated patches before apply in local workspace mode.",
+            "- Review dependency/config drift in large repos.",
+            "",
+            "## Source References",
+            refs_text,
+        ]
+    ).strip()
 
 
 def _file_summary_cache_key(
@@ -278,7 +554,7 @@ def _file_summary_prompt(file_name: str, content: str, truncated: bool) -> str:
         "-",
         "## Key Components (functions/classes)",
         "-",
-        "## Inputs/Outputs",
+        "## Inputs / Outputs",
         "-",
         "## Side Effects",
         "-",
@@ -300,70 +576,368 @@ def _file_summary_prompt(file_name: str, content: str, truncated: bool) -> str:
     return "\n".join(lines)
 
 
-def _wiki_prompt(repo_name: str) -> str:
+def _wiki_prompt(
+    repo_name: str,
+    *,
+    module_mermaid: str,
+    flow_mermaid: str,
+    module_hints: list[str],
+    route_hints: list[str],
+) -> str:
+    module_hint_text = (
+        "\n".join(f"- {item}" for item in module_hints[:16])
+        if module_hints
+        else "- Not evident"
+    )
+    route_hint_text = (
+        "\n".join(f"- {item}" for item in route_hints[:16])
+        if route_hints
+        else "- Not evident"
+    )
     lines = [
-        "You are Codex. Produce a wiki-style Markdown document.",
+        "You are Codex. Produce a detailed repository wiki document.",
         "Return ONLY Markdown in the exact structure below.",
-        "Use bullet points. If unknown, write 'Not evident'.",
+        "Use meaningful bullet points. If unknown, write 'Not evident'.",
         "Do not dump full file contents; summarize instead.",
+        "Target depth: 900-1500 words total.",
+        "For each major section, include at least 4 concise bullets.",
+        "Every major claim must cite sources using inline format:",
+        "`path/to/file.py:L10-L40`.",
+        (
+            "Never cite generated/build/cache files (for example: "
+            "__pycache__, node_modules, venv, .venv, dist, build, *.pyc)."
+        ),
+        (
+            "When proposing new files or edits, stay aligned with existing "
+            "source folders and naming conventions."
+        ),
+        "Keep Mermaid syntax valid.",
+        "Use the provided repo facts and do not output generic placeholder diagrams.",
         "",
-        f"# {repo_name}",
+        "Repo module hints:",
+        module_hint_text,
+        "",
+        "Repo API/runtime hints:",
+        route_hint_text,
+        "",
+        f"# Repository Wiki: {repo_name}",
         "",
         "## Overview",
         "-",
         "",
-        "## Key Components",
+        "## High-Level Design (HLD)",
+        "-",
+        "",
+        "## Low-Level Design (LLD)",
         "-",
         "",
         "## Architecture",
         "-",
         "",
         "```mermaid",
-        "flowchart LR",
-        "  A[Entry Point] --> B[Core Logic]",
-        "  B --> C[External Services]",
+        module_mermaid.strip(),
         "```",
         "",
-        "## Data Flow / Execution Flow",
+        "## Key Modules",
+        "-",
+        "",
+        "## Data Flow / Control Flow",
         "-",
         "",
         "```mermaid",
-        "sequenceDiagram",
-        "  participant User",
-        "  participant UI",
-        "  participant Backend",
-        "  participant LLM",
-        "  User->>UI: Action",
-        "  UI->>Backend: API call",
-        "  Backend->>LLM: Prompt",
-        "  LLM-->>Backend: Result",
+        flow_mermaid.strip(),
         "```",
-        "",
-        "## Configuration",
-        "-",
-        "",
-        "## Runtime assumptions",
-        "-",
-        "",
-        "## Providers (Gemini / Azure OpenAI)",
-        "-",
         "",
         "## How to Run",
         "-",
         "",
-        "## Validation commands",
+        "## How to Test",
         "-",
         "",
-        "## Common workflows",
-        "-",
-        "",
-        "## Key Files to Know",
+        "## Common Workflows",
         "-",
         "",
         "## Risks / TODOs",
         "-",
     ]
     return "\n".join(lines)
+
+
+def _read_wiki_artifact_if_fingerprint_matches(
+    artifact_path: Path,
+    meta_path: Path,
+    *,
+    fingerprint: str,
+    provider: ProviderName,
+) -> dict | None:
+    if not artifact_path.exists() or not meta_path.exists():
+        return None
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if meta.get("fingerprint") != fingerprint:
+        return None
+    markdown = _strip_noise_citations(artifact_path.read_text(encoding="utf-8"))
+    return {
+        "markdown": markdown,
+        "cached": True,
+        "generated_at": meta.get("generated_at"),
+        "provider": meta.get("provider") or provider,
+        "queued_ms": None,
+    }
+
+
+def _read_wiki_artifact_any(
+    artifact_path: Path, meta_path: Path, provider: ProviderName
+) -> dict | None:
+    if not artifact_path.exists():
+        return None
+    meta: dict = {}
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            meta = {}
+    markdown = _strip_noise_citations(artifact_path.read_text(encoding="utf-8"))
+    return {
+        "markdown": markdown,
+        "cached": True,
+        "generated_at": meta.get("generated_at"),
+        "provider": meta.get("provider") or provider,
+        "queued_ms": None,
+    }
+
+
+def _save_wiki_artifact(
+    artifact_path: Path,
+    meta_path: Path,
+    *,
+    markdown: str,
+    fingerprint: str,
+    provider: ProviderName,
+    generated_at: str,
+) -> None:
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text(markdown, encoding="utf-8")
+    meta_path.write_text(
+        json.dumps(
+            {
+                "fingerprint": fingerprint,
+                "provider": provider,
+                "generated_at": generated_at,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _contains_heading(markdown: str, heading: str) -> bool:
+    needle = f"## {heading}".lower()
+    return needle in markdown.lower()
+
+
+def _count_mermaid_blocks(markdown: str) -> int:
+    return markdown.lower().count("```mermaid")
+
+
+def _strip_noise_citations(markdown: str) -> str:
+    citation_pattern = re.compile(r"([A-Za-z0-9_./\\-]+:L\d+-L\d+)")
+
+    def _replace(match: re.Match[str]) -> str:
+        citation = match.group(1)
+        path = citation.split(":L", 1)[0]
+        return "" if _is_noise_rel_path(path) else citation
+
+    cleaned = citation_pattern.sub(_replace, markdown)
+    cleaned = re.sub(r"\(\s*,\s*", "(", cleaned)
+    cleaned = re.sub(r"\[\s*,\s*", "[", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _ensure_wiki_structure(
+    markdown: str,
+    *,
+    repo_name: str,
+    fallback_component_mermaid: str,
+    fallback_flow_mermaid: str,
+    fallback_refs: list[str] | None = None,
+) -> str:
+    text = markdown.strip()
+    if not text:
+        text = f"# Repository Wiki: {repo_name}\n"
+
+    if not text.startswith("# Repository Wiki:"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("# "):
+            lines[0] = f"# Repository Wiki: {repo_name}"
+            text = "\n".join(lines)
+        else:
+            text = f"# Repository Wiki: {repo_name}\n\n{text}"
+
+    required_sections = [
+        "Overview",
+        "High-Level Design (HLD)",
+        "Low-Level Design (LLD)",
+        "Architecture",
+        "Key Modules",
+        "Data Flow / Control Flow",
+        "How to Run",
+        "How to Test",
+        "Common Workflows",
+        "Risks / TODOs",
+        "Source References",
+    ]
+    for section in required_sections:
+        if not _contains_heading(text, section):
+            text = f"{text}\n\n## {section}\n- Not evident."
+
+    if (
+        "A[Entry Point]" in text
+        and "B[Core Logic]" in text
+        and "C[External Services]" in text
+    ):
+        text = text.replace(
+            "flowchart LR\n  A[Entry Point] --> B[Core Logic]\n"
+            "  B --> C[External Services]",
+            fallback_component_mermaid.strip(),
+        )
+    if (
+        "A[User Prompt]" in text
+        and "B[Context Pack Builder]" in text
+        and "C[LLM Call]" in text
+    ):
+        text = text.replace(
+            "flowchart TD\n  A[User Prompt] --> B[Context Pack Builder]\n"
+            "  B --> C[LLM Call]\n  C --> D[Proposed Edits or Answer]",
+            fallback_flow_mermaid.strip(),
+        )
+
+    mermaid_blocks = _count_mermaid_blocks(text)
+    if mermaid_blocks < 1:
+        text = f"{text}\n\n```mermaid\n{fallback_component_mermaid}\n```"
+        mermaid_blocks = 1
+    if mermaid_blocks < 2:
+        text = f"{text}\n\n```mermaid\n{fallback_flow_mermaid}\n```"
+    has_citation = bool(re.search(r"[A-Za-z0-9_./-]+:L\\d+-L\\d+", text))
+    if not has_citation:
+        refs = fallback_refs or []
+        if not refs:
+            refs = ["README.md:L1-L20"]
+        ref_lines = "\n".join(f"- `{item}`" for item in refs[:12])
+        text = f"{text}\n\n## Source References\n{ref_lines}"
+    return text.strip()
+
+
+def _boost_wiki_detail(markdown: str, workspace_root: Path, digest) -> str:
+    minimum_chars = int(os.getenv("LLM_WIKI_MIN_CHARS", "2400"))
+    if len(markdown) >= minimum_chars:
+        return markdown
+
+    files: list[str] = []
+    for item in digest.metadata.get("files", [])[:300]:
+        path = str(item.get("path", "")).strip()
+        if not path or _is_noise_rel_path(path):
+            continue
+        files.append(path)
+    if not files:
+        return markdown
+
+    modules: dict[str, list[str]] = {}
+    for path in files:
+        parts = path.split("/")
+        module = parts[0] if len(parts) > 1 else "(root)"
+        modules.setdefault(module, []).append(path)
+
+    module_lines: list[str] = []
+    for name, module_files in sorted(
+        modules.items(),
+        key=lambda pair: len(pair[1]),
+        reverse=True,
+    )[:10]:
+        examples = ", ".join(f"`{item}`" for item in module_files[:3])
+        module_lines.append(
+            f"- `{name}` contains {len(module_files)} files (examples: {examples}) "
+            f"(`{module_files[0]}:L1-L80`)."
+        )
+
+    file_roles: list[str] = []
+    for path in files[:20]:
+        lowered = path.lower()
+        if any(token in lowered for token in ("test", "spec")):
+            role = "test coverage and behavior validation"
+        elif any(token in lowered for token in ("api", "route", "endpoint")):
+            role = "request handling and API contract surface"
+        elif any(token in lowered for token in ("model", "schema", "entity")):
+            role = "data model and schema constraints"
+        elif any(token in lowered for token in ("service", "manager", "controller")):
+            role = "business logic orchestration"
+        elif any(token in lowered for token in ("util", "helper", "common")):
+            role = "shared utility logic"
+        else:
+            role = "implementation module"
+        file_roles.append(f"- `{path}`: {role} (`{path}:L1-L80`).")
+
+    module_nodes = sorted(modules.keys(), key=lambda key: key.lower())[:8]
+    mermaid_lines = ["flowchart LR", f'  ROOT["{workspace_root.name}"]']
+    for idx, name in enumerate(module_nodes, start=1):
+        node = _safe_mermaid_id(name, idx + 100)
+        mermaid_lines.append(f'  ROOT --> {node}["{name}"]')
+    for idx in range(len(module_nodes) - 1):
+        left = _safe_mermaid_id(module_nodes[idx], idx + 101)
+        right = _safe_mermaid_id(module_nodes[idx + 1], idx + 102)
+        mermaid_lines.append(f"  {left} -.depends on.-> {right}")
+
+    appendix = [
+        "## Module Relationship Map",
+        (
+            "- This map is inferred from local folder/module boundaries and "
+            "file distribution."
+        ),
+        *(module_lines or ["- Not evident."]),
+        "",
+        "```mermaid",
+        "\n".join(mermaid_lines),
+        "```",
+        "",
+        "## File Interaction Notes",
+        (
+            "- The following files are likely connection points for execution "
+            "flow and data propagation."
+        ),
+        *(file_roles or ["- Not evident."]),
+    ]
+    return f"{markdown}\n\n" + "\n".join(appendix).strip()
+
+
+def _module_cache_dir(workspace_id: str) -> Path:
+    path = Path(".codex_memory") / workspace_id / "cache" / "module_summaries"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _module_summary_key(name: str, files: list[str]) -> str:
+    raw = json.dumps({"name": name, "files": files}, sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _load_module_summary(workspace_id: str, key: str) -> str | None:
+    path = _module_cache_dir(workspace_id) / f"{key}.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data.get("summary")
+
+
+def _save_module_summary(workspace_id: str, key: str, summary: str) -> None:
+    path = _module_cache_dir(workspace_id) / f"{key}.json"
+    payload = {"summary": summary, "generated_at": datetime.now(UTC).isoformat()}
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def _extract_last_agent_message(conversation: BaseConversation) -> str:
@@ -595,16 +1169,165 @@ def wiki_explain(
         cached_copy = dict(cached)
         cached_copy["cached"] = True
         return cached_copy
-    base_prompt = _wiki_prompt(workspace_root.name)
-    prompt = _compose_prompt(digest.prompt, base_prompt, budget, logger)
-    system_prompt = "You are a repository documentation assistant."
-    markdown, queued_ms = _single_llm_completion(
+    artifact_id = _wiki_cache_id(workspace_root, workspace_id)
+    artifact_path = _wiki_artifact_path(artifact_id)
+    meta_path = _wiki_meta_path(artifact_id)
+    persisted = _read_wiki_artifact_if_fingerprint_matches(
+        artifact_path,
+        meta_path,
+        fingerprint=fingerprint,
         provider=provider,
-        prompt=prompt,
-        llm_params=llm_params,
-        azure_config=azure_config,
-        system_prompt=system_prompt,
     )
+    if persisted:
+        _set_cached_analysis(cache_key, persisted)
+        return persisted
+    memory = ensure_repo_memory(artifact_id, workspace_root, resolved_scope)
+    module_mermaid = _module_graph_mermaid_from_memory(memory, workspace_root)
+    route_hints = _extract_api_routes_from_repo(workspace_root, resolved_scope)
+    flow_mermaid = _runtime_flow_mermaid_from_routes(route_hints)
+    module_hints: list[str] = []
+    module_counts: dict[str, int] = defaultdict(int)
+    for item in memory.repo_index.get("files", [])[:500]:
+        rel = str(item.get("path", "")).strip()
+        if not rel or _is_noise_rel_path(rel):
+            continue
+        module_counts[_extract_module(rel)] += 1
+    for name, count in sorted(
+        module_counts.items(), key=lambda pair: pair[1], reverse=True
+    )[:12]:
+        module_hints.append(f"{name}: {count} files")
+
+    base_prompt = _wiki_prompt(
+        workspace_root.name,
+        module_mermaid=module_mermaid,
+        flow_mermaid=flow_mermaid,
+        module_hints=module_hints,
+        route_hints=route_hints,
+    )
+    system_prompt = "You are a repository documentation assistant."
+    max_prompt_chars = int(os.getenv("LLM_WIKI_MAX_PROMPT_CHARS", "20000"))
+    use_hierarchical = len(digest.prompt) > max_prompt_chars
+    queued_ms = None
+
+    try:
+        if not use_hierarchical:
+            prompt = _compose_prompt(digest.prompt, base_prompt, budget, logger)
+            markdown, queued_ms = _single_llm_completion(
+                provider=provider,
+                prompt=prompt,
+                llm_params=llm_params,
+                azure_config=azure_config,
+                system_prompt=system_prompt,
+            )
+        else:
+            files = memory.repo_index.get("files", [])
+            modules: dict[str, list[str]] = {}
+            for item in files:
+                path = item.get("path")
+                if not path:
+                    continue
+                parts = path.split("/")
+                module = parts[0] if len(parts) > 1 else "(root)"
+                modules.setdefault(module, []).append(path)
+            module_items = sorted(
+                modules.items(), key=lambda i: len(i[1]), reverse=True
+            )
+            module_items = module_items[:6]
+            module_summaries = []
+            for name, paths in module_items:
+                short_list = paths[:80]
+                key = _module_summary_key(name, short_list)
+                cached_module = _load_module_summary(artifact_id, key)
+                if cached_module:
+                    module_summaries.append(f"## Module {name}\n{cached_module}")
+                    continue
+                module_prompt = "\n".join(
+                    [
+                        f"Summarize module '{name}' in 6-10 bullets.",
+                        "Focus on purpose, main responsibilities, and notable files.",
+                        "Files:",
+                        "\n".join(f"- {item}" for item in short_list),
+                    ]
+                )
+                summary_text, _ = _single_llm_completion(
+                    provider=provider,
+                    prompt=module_prompt,
+                    llm_params=llm_params,
+                    azure_config=azure_config,
+                    system_prompt=system_prompt,
+                )
+                _save_module_summary(artifact_id, key, summary_text)
+                module_summaries.append(f"## Module {name}\n{summary_text}")
+            synthesis_prompt = "\n\n".join(module_summaries + [base_prompt])
+            markdown, queued_ms = _single_llm_completion(
+                provider=provider,
+                prompt=synthesis_prompt[: budget.max_prompt_chars],
+                llm_params=llm_params,
+                azure_config=azure_config,
+                system_prompt=system_prompt,
+            )
+    except RateLimitedError:
+        stale = _read_wiki_artifact_any(artifact_path, meta_path, provider)
+        if stale:
+            stale_copy = dict(stale)
+            stale_copy["markdown"] = (
+                "> Warning: provider rate limited. Showing cached wiki.\n\n"
+                + stale_copy["markdown"]
+            )
+            return stale_copy
+        generated_at = datetime.now(UTC).isoformat()
+        fallback_markdown = _fallback_wiki_response(
+            workspace_root,
+            resolved_scope,
+            digest,
+        )
+        data = {
+            "markdown": (
+                "> Warning: provider rate limited. "
+                "Showing deterministic local wiki.\n\n" + fallback_markdown
+            ),
+            "cached": False,
+            "generated_at": generated_at,
+            "provider": provider,
+            "queued_ms": None,
+        }
+        _set_cached_analysis(cache_key, data)
+        _save_wiki_artifact(
+            artifact_path,
+            meta_path,
+            markdown=data["markdown"],
+            fingerprint=fingerprint,
+            provider=provider,
+            generated_at=generated_at,
+        )
+        return data
+    fallback_refs: list[str] = []
+    try:
+        for candidate in sorted(
+            workspace_root.rglob("*"), key=lambda p: p.as_posix().lower()
+        ):
+            if len(fallback_refs) >= 12:
+                break
+            if not candidate.is_file():
+                continue
+            if resolved_scope.validate_path(candidate) is not None:
+                continue
+            rel = candidate.relative_to(workspace_root).as_posix()
+            if _is_noise_rel_path(rel):
+                continue
+            fallback_refs.append(f"{rel}:L1-L40")
+    except Exception:
+        fallback_refs = []
+
+    markdown = _ensure_wiki_structure(
+        markdown,
+        repo_name=workspace_root.name,
+        fallback_component_mermaid=module_mermaid,
+        fallback_flow_mermaid=flow_mermaid,
+        fallback_refs=fallback_refs,
+    )
+    markdown = _boost_wiki_detail(markdown, workspace_root, digest)
+    markdown = _strip_noise_citations(markdown)
     generated_at = datetime.now(UTC).isoformat()
     data = {
         "markdown": markdown,
@@ -614,10 +1337,14 @@ def wiki_explain(
         "queued_ms": queued_ms,
     }
     _set_cached_analysis(cache_key, data)
-    artifact_id = _wiki_cache_id(workspace_root, workspace_id)
-    artifact_path = _wiki_artifact_path(artifact_id)
-    artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    artifact_path.write_text(markdown, encoding="utf-8")
+    _save_wiki_artifact(
+        artifact_path,
+        meta_path,
+        markdown=markdown,
+        fingerprint=fingerprint,
+        provider=provider,
+        generated_at=generated_at,
+    )
     return data
 
 
@@ -656,7 +1383,7 @@ def file_summary(
                     "- Not evident.",
                     "## Key Components (functions/classes)",
                     "- Not evident.",
-                    "## Inputs/Outputs",
+                    "## Inputs / Outputs",
                     "- Not evident.",
                     "## Side Effects",
                     "- Not evident.",

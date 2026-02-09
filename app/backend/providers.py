@@ -96,7 +96,7 @@ class ManagedIdentityLLM(LLM):
         return manager.call(self.provider_name, _call)
 
 
-ProviderName = Literal["gemini", "azure_mi"]
+ProviderName = Literal["openai", "azure", "gemini", "azure_mi"]
 
 
 def _require_env(name: str) -> str:
@@ -139,6 +139,18 @@ def create_llm(
         retry_config={},
     )
     manager = get_llm_call_manager()
+    if provider == "openai":
+        api_key = _require_env("OPENAI_API_KEY")
+        model = config.model_override or os.getenv("OPENAI_MODEL") or "gpt-4o"
+        return ThrottledLLM(
+            model=model,
+            api_key=SecretStr(api_key),
+            num_retries=0,
+            **config.llm_kwargs,
+            provider_name="openai",
+            call_manager=manager,
+        )
+
     if provider == "gemini":
         api_key = _require_env("GEMINI_API_KEY")
         raw_model = config.model_override or _require_env("LLM_MODEL")
@@ -182,7 +194,7 @@ def create_llm(
         token_provider=token_provider.get_token,
         num_retries=0,
         **config.llm_kwargs,
-        provider_name=provider,
+        provider_name="azure",
         call_manager=manager,
     )
     return llm

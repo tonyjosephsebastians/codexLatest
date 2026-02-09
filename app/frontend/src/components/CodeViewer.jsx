@@ -22,7 +22,14 @@ const guessLanguage = (path) => {
   return "markup";
 };
 
-export default function CodeViewer({ file, onLineClick, loading }) {
+export default function CodeViewer({
+  file,
+  onLineClick,
+  onSelectRange,
+  selectedRange,
+  diffHighlights,
+  loading
+}) {
   const language = guessLanguage(file?.path);
   const code = file?.content || "";
 
@@ -73,13 +80,34 @@ export default function CodeViewer({ file, onLineClick, loading }) {
       {lines.map((line, idx) => (
         <div
           key={`${file.path}-${idx}`}
-          className="flex border-b border-slate-100 hover:bg-slate-50"
-          onClick={() => onLineClick(file.path, idx + 1)}
+          className={`flex border-b border-slate-100 ${
+            selectedRange &&
+            idx + 1 >= selectedRange.start_line &&
+            idx + 1 <= selectedRange.end_line
+              ? "bg-primary-50"
+              : diffHighlights?.added?.has(idx + 1)
+                ? "bg-green-50"
+                : diffHighlights?.removed?.has(idx + 1)
+                  ? "bg-red-50"
+              : "hover:bg-slate-50"
+          }`}
+          onClick={(event) => {
+            onLineClick?.(file.path, idx + 1);
+            onSelectRange?.(idx + 1, event.shiftKey);
+          }}
           role="button"
           tabIndex={0}
           onKeyDown={() => {}}
         >
-          <span className="w-12 select-none border-r border-slate-100 px-4 py-1 text-right text-[11px] text-slate-400">
+          <span
+            className={`w-12 select-none border-r px-4 py-1 text-right text-[11px] ${
+              diffHighlights?.added?.has(idx + 1)
+                ? "border-green-300 text-green-600"
+                : diffHighlights?.removed?.has(idx + 1)
+                  ? "border-red-300 text-red-600"
+                  : "border-slate-100 text-slate-400"
+            }`}
+          >
             {idx + 1}
           </span>
           <span

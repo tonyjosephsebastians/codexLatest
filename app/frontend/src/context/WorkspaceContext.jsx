@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
-import { apiGet, apiPost } from "../lib/api.js";
+import { apiDelete, apiGet, apiPost } from "../lib/api.js";
 import { useToast } from "./ToastContext.jsx";
 
 const WorkspaceContext = createContext(null);
@@ -45,6 +45,15 @@ export function WorkspaceProvider({ children }) {
     });
   };
 
+  const clearWorkspaceMemory = async (workspaceId) => {
+    await apiDelete(`/api/workspaces/${workspaceId}/memory`);
+    pushToast({
+      title: "Workspace memory cleared",
+      message: "Repo memory and cached wiki/context were reset",
+      variant: "success"
+    });
+  };
+
   const value = useMemo(
     () => ({
       workspaces,
@@ -54,6 +63,7 @@ export function WorkspaceProvider({ children }) {
       isModalOpen,
       setIsModalOpen,
       openWorkspace,
+      clearWorkspaceMemory,
       refreshWorkspaces
     }),
     [
